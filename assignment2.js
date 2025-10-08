@@ -7,7 +7,14 @@ var program = null;
 var vertexCount = 0;
 var uniformModelViewLoc = null;
 var uniformProjectionLoc = null;
+var uniformHeightScaleLoc = null;
 var heightmapData = null;
+var modelY = 0;
+var modelZ = 0;
+var eyeX = 0;
+var eyeY = 0;
+var eyeZ = 0;
+var wireframe = false;
 
 function processImage(img)
 {
@@ -70,15 +77,49 @@ window.loadImageFile = function(event)
 		{
 			// heightmapData is globally defined
 			heightmapData = processImage(img);
-			
-			/*
-				TODO: using the data in heightmapData, create a triangle mesh
-					heightmapData.data: array holding the actual data, note that 
-					this is a single dimensional array the stores 2D data in row-major order
 
-					heightmapData.width: width of map (number of columns)
-					heightmapData.height: height of the map (number of rows)
-			*/
+			var positions = [];
+
+			for (var y = 0; y < heightmapData.height - 1; y++) {
+				for (var x = 0; x < heightmapData.width - 1; x++) {
+					var h1 = heightmapData.data[y * heightmapData.width + x];
+					var h2 = heightmapData.data[y * heightmapData.width + (x + 1)];
+					var h3 = heightmapData.data[(y + 1) * heightmapData.width + x];
+					var h4 = heightmapData.data[(y + 1) * heightmapData.width + (x + 1)];
+
+					var x1 = (x / (heightmapData.width - 1)) * 2 - 1;
+					var y1 = (y / (heightmapData.height - 1)) * 2 - 1;
+					var x2 = ((x + 1) / (heightmapData.width - 1)) * 2 - 1;
+					var y2 = ((y + 1) / (heightmapData.height - 1)) * 2 - 1;
+
+					// First triangle (top-left)
+					positions.push(x1, h1, y1);
+					positions.push(x2, h2, y1);
+					positions.push(x1, h3, y2);
+
+					// Second triangle (bottom-right)
+					positions.push(x2, h2, y1);
+					positions.push(x2, h4, y2);
+					positions.push(x1, h3, y2);
+				}
+			}
+
+			vertexCount = positions.length / 3; // each vertex has 3 components (x, y, z)
+
+			var positionBuffer = createBuffer(gl, gl.ARRAY_BUFFER, new Float32Array(positions));
+			
+			// re-create the VAO with the new position buffer
+			var posAttribLoc = gl.getAttribLocation(program, "position");
+			vao = createVAO(gl,
+				// positions
+				posAttribLoc, positionBuffer,
+
+				// normals (unused in this assignments)
+				null, null,
+
+				// colors (not needed--computed by shader)
+				null, null
+			);		
 			console.log('loaded image: ' + heightmapData.width + ' x ' + heightmapData.height);
 
 		};
@@ -94,6 +135,9 @@ window.loadImageFile = function(event)
 	reader.readAsDataURL(f);
 }
 
+window.toggleWireframe = function() {
+	wireframe = document.querySelector("#wireframe").checked;
+}
 
 function setupViewMatrix(eye, target)
 {
@@ -116,19 +160,36 @@ function draw()
 	var farClip = 20.0;
 
 	// perspective projection
-	var projectionMatrix = perspectiveMatrix(
-		fovRadians,
-		aspectRatio,
-		nearClip,
-		farClip,
-	);
+	var projectionMatrix;
+	if (document.querySelector("#projection").value == 'perspective')
+	{
+		projectionMatrix= perspectiveMatrix(
+			fovRadians,
+			aspectRatio,
+			nearClip,
+			farClip,
+		);
+	}
+	else { // orthographic projection
+		projectionMatrix = orthographicMatrix(
+			-1.5 * aspectRatio, 
+			1.5 * aspectRatio, 
+			-1.5, 
+			1.5, 
+			nearClip, 
+			farClip
+		);
+	}
+
+	// rotation angles
+	var rotY = ((modelY / gl.canvas.width) * 360) * Math.PI / 180;
+	var rotZ = ((modelZ / gl.canvas.height) * 360) * Math.PI / 180;
 
 	// eye and target
-	var eye = [0, 5, 5];
-	var target = [0, 0, 0];
+	var eye = [eyeX, eyeY, eyeZ];
+	var target = add(eye, [0, 0, -1]);
 
-	var modelMatrix = identityMatrix();
-
+	var modelMatrix = multiplyMatrices(rotateYMatrix(rotY), rotateZMatrix(rotZ));
 	// TODO: set up transformations to the model
 
 	// setup viewing matrix
@@ -138,6 +199,7 @@ function draw()
 	// model-view Matrix = view * model
 	var modelviewMatrix = multiplyMatrices(viewMatrix, modelMatrix);
 
+	var heightScale = parseFloat(document.querySelector("#height").value);
 
 	// enable depth testing
 	gl.enable(gl.DEPTH_TEST);
@@ -154,72 +216,15 @@ function draw()
 	// update modelview and projection matrices to GPU as uniforms
 	gl.uniformMatrix4fv(uniformModelViewLoc, false, new Float32Array(modelviewMatrix));
 	gl.uniformMatrix4fv(uniformProjectionLoc, false, new Float32Array(projectionMatrix));
+	gl.uniform1f(uniformHeightScaleLoc, heightScale);
+
 
 	gl.bindVertexArray(vao);
 	
-	var primitiveType = gl.TRIANGLES;
+	var primitiveType = wireframe ? gl.LINES : gl.TRIANGLES;
 	gl.drawArrays(primitiveType, 0, vertexCount);
 
 	requestAnimationFrame(draw);
-
-}
-
-function createBox()
-{
-	function transformTriangle(triangle, matrix) {
-		var v1 = [triangle[0], triangle[1], triangle[2], 1];
-		var v2 = [triangle[3], triangle[4], triangle[5], 1];
-		var v3 = [triangle[6], triangle[7], triangle[8], 1];
-
-		var newV1 = multiplyMatrixVector(matrix, v1);
-		var newV2 = multiplyMatrixVector(matrix, v2);
-		var newV3 = multiplyMatrixVector(matrix, v3);
-
-		return [
-			newV1[0], newV1[1], newV1[2],
-			newV2[0], newV2[1], newV2[2],
-			newV3[0], newV3[1], newV3[2]
-		];
-	}
-
-	var box = [];
-
-	var triangle1 = [
-		-1, -1, +1,
-		-1, +1, +1,
-		+1, -1, +1,
-	];
-	box.push(...triangle1)
-
-	var triangle2 = [
-		+1, -1, +1,
-		-1, +1, +1,
-		+1, +1, +1
-	];
-	box.push(...triangle2);
-
-	// 3 rotations of the above face
-	for (var i=1; i<=3; i++) 
-	{
-		var yAngle = i* (90 * Math.PI / 180);
-		var yRotMat = rotateYMatrix(yAngle);
-
-		var newT1 = transformTriangle(triangle1, yRotMat);
-		var newT2 = transformTriangle(triangle2, yRotMat);
-
-		box.push(...newT1);
-		box.push(...newT2);
-	}
-
-	// a rotation to provide the base of the box
-	var xRotMat = rotateXMatrix(90 * Math.PI / 180);
-	box.push(...transformTriangle(triangle1, xRotMat));
-	box.push(...transformTriangle(triangle2, xRotMat));
-
-
-	return {
-		positions: box
-	};
 
 }
 
@@ -258,9 +263,11 @@ function addMouseCallback(canvas)
 		{
 			console.log("Scrolled up");
 			// e.g., zoom in
+			eyeZ += 0.1;
 		} else {
 			console.log("Scrolled down");
 			// e.g., zoom out
+			eyeZ -= 0.1;
 		}
 	});
 
@@ -274,6 +281,18 @@ function addMouseCallback(canvas)
 		console.log('mouse drag by: ' + deltaX + ', ' + deltaY);
 
 		// implement dragging logic
+		if (leftMouse) {
+			// left button: rotate
+			modelY += deltaX;
+			modelZ += deltaY;
+		} else {
+			// right button: pan
+			eyeX -= deltaX * 0.01;
+			eyeY += deltaY * 0.01;
+		}
+			
+		startX = currentX;
+		startY = currentY;
 	});
 
 	document.addEventListener("mouseup", function () {
@@ -296,36 +315,14 @@ function initialize()
 	// add mouse callbacks
 	addMouseCallback(canvas);
 
-	var box = createBox();
-	vertexCount = box.positions.length / 3;		// vertexCount is global variable used by draw()
-	console.log(box);
-
-	// create buffers to put in box
-	var boxVertices = new Float32Array(box['positions']);
-	var posBuffer = createBuffer(gl, gl.ARRAY_BUFFER, boxVertices);
-
 	var vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSrc);
 	var fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSrc);
 	program = createProgram(gl, vertexShader, fragmentShader);
 
-	// attributes (per vertex)
-	var posAttribLoc = gl.getAttribLocation(program, "position");
-
 	// uniforms
 	uniformModelViewLoc = gl.getUniformLocation(program, 'modelview');
 	uniformProjectionLoc = gl.getUniformLocation(program, 'projection');
-
-	vao = createVAO(gl, 
-		// positions
-		posAttribLoc, posBuffer, 
-
-		// normals (unused in this assignments)
-		null, null, 
-
-		// colors (not needed--computed by shader)
-		null, null
-	);
-
+	uniformHeightScaleLoc = gl.getUniformLocation(program, 'heightScale');
 	window.requestAnimationFrame(draw);
 }
 
